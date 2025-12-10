@@ -1,105 +1,158 @@
 import React, { useState } from "react";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogFooter,
-} from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { base44 } from "@/api/base44Client";
-import { toast } from "sonner";
+import { PackagePlus, PackageMinus } from "lucide-react";
 
-export default function StockAdjustmentModal({ open, onClose, item, vehicleId }) {
-  const [newQuantity, setNewQuantity] = useState("");
-  const [reason, setReason] = useState("");
+export default function StockAdjustmentModal({ item, open, onClose }) {
+  const [movementType, setMovementType] = useState("stock_in");
+  const [quantity, setQuantity] = useState("");
+  const [notes, setNotes] = useState("");
   const queryClient = useQueryClient();
 
-  React.useEffect(() => {
-    if (open && item) {
-      setNewQuantity(item.quantity_on_hand);
-      setReason("");
-    }
-  }, [open, item]);
-
-  const adjustMutation = useMutation({
+  const adjustStockMutation = useMutation({
     mutationFn: async (data) => {
-      const response = await base44.functions.invoke('manageVehicleStock', {
-        action: 'adjust',
-        data: data
+      const quantityValue = parseInt(data.quantity);
+      const adjustedQuantity = data.movementType === 'stock_out' ? -quantityValue : quantityValue;
+      const newStock = item.stock_level + adjustedQuantity;
+
+      // Log the movement
+      await base44.entities.InventoryMovement.create({
+        price_list_item_id: item.id,
+        item_name: item.item,
+        movement_type: data.movementType,
+        quantity: adjustedQuantity,
+        previous_stock: item.stock_level,
+        new_stock: newStock,
+        notes: data.notes
       });
-      if (response.data.error) throw new Error(response.data.error);
-      return response.data;
+
+      // Update the item stock
+      await base44.entities.PriceListItem.update(item.id, {
+        stock_level: newStock
+      });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vehicleStock', vehicleId] });
-      toast.success("Stock adjusted successfully");
+      queryClient.invalidateQueries({ queryKey: ['priceListItems'] });
+      setQuantity("");
+      setNotes("");
+      setMovementType("stock_in");
       onClose();
-    },
-    onError: (err) => toast.error(err.message)
+    }
   });
 
-  const handleSubmit = () => {
-    if (newQuantity === "" || newQuantity < 0) {
-      toast.error("Please enter a valid quantity");
-      return;
-    }
-
-    adjustMutation.mutate({
-      vehicle_id: vehicleId,
-      product_id: item.product_id,
-      new_quantity: parseInt(newQuantity),
-      reason: reason || "Manual adjustment"
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    adjustStockMutation.mutate({
+      movementType,
+      quantity,
+      notes
     });
   };
 
+  if (!item) return null;
+
+  const newStock = movementType === 'stock_out' 
+    ? item.stock_level - parseInt(quantity || 0)
+    : item.stock_level + parseInt(quantity || 0);
+
   return (
     <Dialog open={open} onOpenChange={onClose}>
-      <DialogContent>
+      <DialogContent className="max-w-md">
         <DialogHeader>
-          <DialogTitle>Adjust Stock: {item?.product_name}</DialogTitle>
+          <DialogTitle>Adjust Stock - {item.item}</DialogTitle>
         </DialogHeader>
-        
-        <div className="space-y-4">
-          <div className="space-y-2">
-            <Label>Current Quantity</Label>
-            <div className="font-medium text-lg">{item?.quantity_on_hand}</div>
+
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div className="bg-slate-50 rounded-lg p-4 border border-slate-200">
+            <div className="text-sm text-slate-600 mb-1">Current Stock</div>
+            <div className="text-2xl font-bold text-slate-900">{item.stock_level}</div>
           </div>
 
-          <div className="space-y-2">
-            <Label>New Quantity</Label>
-            <Input 
-              type="number" 
-              min="0"
-              value={newQuantity}
-              onChange={(e) => setNewQuantity(e.target.value)}
+          <div>
+            <Label>Movement Type</Label>
+            <Select value={movementType} onValueChange={setMovementType}>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="stock_in">
+                  <div className="flex items-center gap-2">
+                    <PackagePlus className="w-4 h-4 text-green-600" />
+                    Stock In (Receiving)
+                  </div>
+                </SelectItem>
+                <SelectItem value="stock_out">
+                  <div className="flex items-center gap-2">
+                    <PackageMinus className="w-4 h-4 text-red-600" />
+                    Stock Out (Manual)
+                  </div>
+                </SelectItem>
+                <SelectItem value="adjustment">Adjustment (Correction)</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div>
+            <Label>Quantity *</Label>
+            <Input
+              type="number"
+              min="1"
+              value={quantity}
+              onChange={(e) => setQuantity(e.target.value)}
+              placeholder="Enter quantity"
+              required
             />
           </div>
 
-          <div className="space-y-2">
-            <Label>Reason</Label>
-            <Textarea 
-              placeholder="e.g. Found extra stock, Damaged item..."
-              value={reason}
-              onChange={(e) => setReason(e.target.value)}
+          {quantity && (
+            <div className="bg-blue-50 rounded-lg p-4 border border-blue-200">
+              <div className="text-sm text-blue-600 mb-1">New Stock Level</div>
+              <div className={`text-2xl font-bold ${newStock < 0 ? 'text-red-600' : 'text-blue-900'}`}>
+                {newStock}
+              </div>
+              {newStock < 0 && (
+                <div className="text-xs text-red-600 mt-1">
+                  Warning: Stock cannot be negative
+                </div>
+              )}
+            </div>
+          )}
+
+          <div>
+            <Label>Notes</Label>
+            <Textarea
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              placeholder="Add notes about this adjustment..."
+              rows={3}
             />
           </div>
-        </div>
 
-        <DialogFooter>
-          <Button variant="outline" onClick={onClose}>Cancel</Button>
-          <Button 
-            onClick={handleSubmit} 
-            disabled={adjustMutation.isPending}
-            className="bg-blue-600 hover:bg-blue-700 text-white"
-          >
-            {adjustMutation.isPending ? "Saving..." : "Save Adjustment"}
-          </Button>
-        </DialogFooter>
+          <div className="flex gap-3 pt-4">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={onClose}
+              disabled={adjustStockMutation.isPending}
+              className="flex-1"
+            >
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              disabled={adjustStockMutation.isPending || !quantity || newStock < 0}
+              className="flex-1 bg-orange-600 hover:bg-orange-700"
+            >
+              {adjustStockMutation.isPending ? 'Adjusting...' : 'Adjust Stock'}
+            </Button>
+          </div>
+        </form>
       </DialogContent>
     </Dialog>
   );
